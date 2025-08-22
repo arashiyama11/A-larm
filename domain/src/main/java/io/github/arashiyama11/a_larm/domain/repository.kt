@@ -20,6 +20,7 @@ interface AlarmRuleRepository {
 }
 
 interface PersonaRepository {
+    suspend fun list(): List<AssistantPersona>
     suspend fun getCurrent(userId: UserId): AssistantPersona
     suspend fun setCurrent(userId: UserId, persona: AssistantPersona)
 }
