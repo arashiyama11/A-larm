@@ -9,6 +9,7 @@ import io.github.arashiyama11.a_larm.ui.screen.fallback.FallbackAlarmScreen
 import io.github.arashiyama11.a_larm.ui.screen.fallback.FallbackAlarmViewModel
 import io.github.arashiyama11.a_larm.ui.screen.MainPagerScreen
 import io.github.arashiyama11.a_larm.ui.screen.apikey.LlmApiKeyScreen
+import io.github.arashiyama11.a_larm.ui.screen.calendar.CalendarTestScreen
 import io.github.arashiyama11.a_larm.ui.screen.onboarding.OnboardingScreen
 import io.github.arashiyama11.a_larm.ui.screen.session.SessionScreen
 import io.github.arashiyama11.a_larm.ui.screen.session.SessionViewModel
@@ -35,6 +36,10 @@ fun AppNavGraph(
             LlmApiKeyScreen {
                 navController.popBackStack()
             }
+        }
+        
+        composable(Screen.CalendarTest.route) {
+            CalendarTestScreen(navController = navController)
         }
     }
 }

@@ -18,6 +18,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccessTime
+import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material3.Button
@@ -54,7 +55,8 @@ import java.time.LocalTime
 
 @Composable
 fun HomeScreen(
-    homeViewModel: HomeViewModel = hiltViewModel()
+    homeViewModel: HomeViewModel = hiltViewModel(),
+    navigateToCalendarTest: () -> Unit
 ) {
     LaunchedEffect(Unit) {
         homeViewModel.onStart()
@@ -92,6 +94,11 @@ fun HomeScreen(
             onSkipNext = homeViewModel::onSkipNextAlarm,
             onReset = homeViewModel::onResetToDefaultAlarm,
             onToggleOneTime = homeViewModel::onToggleOneTimeAlarm
+        )
+
+        // カレンダー連携テストセクション
+        CalendarTestSection(
+            onNavigateToCalendarTest = navigateToCalendarTest
         )
 
         // タイムピッカーダイアログ
