@@ -16,9 +16,3 @@ data class Style(
     val id: Int,
     val name: String
 )
-
-@Serializable
-data class SpeakRequest(
-    val text: String,
-    val speaker: Int? = null
-)

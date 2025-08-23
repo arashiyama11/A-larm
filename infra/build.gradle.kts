@@ -5,6 +5,7 @@ plugins {
     alias(libs.plugins.hilt)
     alias(libs.plugins.androidx.room)
     alias(libs.plugins.kotlin.serialization)
+
 }
 
 android {

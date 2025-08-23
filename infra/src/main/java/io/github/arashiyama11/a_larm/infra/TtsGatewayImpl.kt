@@ -6,36 +6,76 @@ import android.util.Log
 import dagger.hilt.android.qualifiers.ApplicationContext
 import io.github.arashiyama11.a_larm.domain.TtsGateway
 import io.github.arashiyama11.a_larm.domain.models.VoiceStyle
-import io.github.arashiyama11.a_larm.infra.dto.SpeakRequest
 import io.github.arashiyama11.a_larm.infra.dto.SpeakerResponse
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.asCoroutineDispatcher
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
 import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.OkHttpClient import okhttp3.Request
+import okhttp3.OkHttpClient
+import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
-import java.io.File import java.io.IOException
+import java.io.File
+import java.io.IOException
 import java.net.URLEncoder
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
+
 class TtsGatewayImpl @Inject constructor( @ApplicationContext private val context: Context )
     : TtsGateway {
-    private val client = OkHttpClient()
+    private val client = OkHttpClient.Builder()
+        .callTimeout(30, TimeUnit.SECONDS)       // 全体の処理時間の上限
+        .connectTimeout(5, TimeUnit.SECONDS)     // 接続確立までの時間
+        .readTimeout(30, TimeUnit.SECONDS)       // サーバーからの応答待ち時間
+        .writeTimeout(30, TimeUnit.SECONDS)      // リクエスト送信の猶予時間
+        .build()
+
     private val baseUrl = "https://settling-ghastly-chamois.ngrok-free.app"
     private val json = Json { ignoreUnknownKeys = true }
 
-    override suspend fun speak(text: String, voice: VoiceStyle?) = withContext(Dispatchers.IO) {
+    override suspend fun speak(text: String, voice: VoiceStyle?) = coroutineScope {
         val resolvedStyle = voice ?: VoiceStyle("四国めたん", "ノーマル")
         val speakers = fetchSpeakers()
         val speakerId = resolveSpeakerId(resolvedStyle, speakers)
 
-        Log.d("TtsGatewayImpl", "SpeakRequest text: '$text', speakerId: $speakerId")
+        val chunks = textChunker(text, speakerId)
 
-        val queryRequestBody = json.encodeToString(SpeakRequest(text, speakerId))
-            .toRequestBody("application/json".toMediaType())
+        val dispatcher = Executors.newSingleThreadExecutor().asCoroutineDispatcher()
+
+        val playMutex = Mutex()
+
+        withContext(dispatcher) {
+            chunks.forEachIndexed { index, chunk ->
+                val file = soundCreate(chunk, speakerId)
+                Log.d("Speak", "Generated chunk $index: '${chunk.take(30)}...'")
+
+                launch (Dispatchers.IO){
+                    try {
+                        playMutex.withLock {
+                            audioPlay(file)
+                            Log.d("Speak", "Played chunk $index")
+                        }
+                    } catch (e: Exception) {
+                        Log.e("Speak", "Playback failed for chunk $index", e)
+                    }
+                }
+            }
+        }
+    }
+
+    suspend fun soundCreate(text: String, speakerId: Int): File = withContext(Dispatchers.IO) {
+
+
+        Log.d("TtsGatewayImpl", "SoundCreate text: '$text', speakerId: $speakerId")
 
         val queryUrl = "$baseUrl/audio_query?text=${URLEncoder.encode(text, "UTF-8")}&speaker=$speakerId"
 
@@ -56,6 +96,8 @@ class TtsGatewayImpl @Inject constructor( @ApplicationContext private val contex
         val synthesisRequestBody = queryResponse.body?.string()
             ?.toRequestBody("application/json".toMediaType()) ?: error("Empty query response")
 
+        val synthesisStart = System.currentTimeMillis()
+
         val synthesisResponse = client.newCall(
             Request.Builder()
                 .url("$baseUrl/synthesis?speaker=$speakerId")
@@ -64,51 +106,82 @@ class TtsGatewayImpl @Inject constructor( @ApplicationContext private val contex
                 .build()
         ).execute()
 
+        val synthesisDuration = System.currentTimeMillis() - synthesisStart
+        Log.d("TtsGatewayImpl", "Synthesis took ${synthesisDuration}ms for text: '${text.take(50)}...'")
+
         if (synthesisResponse.code == 422) {
             val errorBody = synthesisResponse.body?.string()
             Log.e("TtsGatewayImpl", "synthesis failed: $errorBody")
             error("synthesis failed: $errorBody")
         }
 
-        val outputFile = File(context.cacheDir, "output.wav")
+        val timestamp = System.currentTimeMillis()
+        val hash = text.hashCode().toString().replace("-", "n") // 簡易識別子
+        val outputFile = File(context.cacheDir, "tts_${hash}_$timestamp.wav")
         synthesisResponse.body?.byteStream()?.use { input ->
             outputFile.outputStream().use { output ->
                 input.copyTo(output)
                 output.flush()
-                output.close()
             }
         }
 
-        Log.d("TtsGatewayImpl", "output.wav path: ${outputFile.absolutePath}")
-        Log.d("TtsGatewayImpl", "output.wav size: ${outputFile.length()}, readable: ${outputFile.canRead()}")
+        Log.d("TtsGatewayImpl", "Generated file: ${outputFile.absolutePath}")
+        return@withContext outputFile
+    }
 
-        val contentType = synthesisResponse.body?.contentType()
-        Log.d("TtsGatewayImpl", "synthesis content type: $contentType")
+    suspend fun audioPlay(file: File) = suspendCancellableCoroutine<Unit> { continuation ->
+        if (!file.exists() || file.length() == 0L || !file.canRead()) {
+            Log.e("TtsGatewayImpl", "Invalid file: cannot prepare MediaPlayer")
+            continuation.resume(Unit)
+            return@suspendCancellableCoroutine
+        }
 
-        suspendCancellableCoroutine<Unit> { continuation ->
+        val player = MediaPlayer()
+        var resumed = false // 再生完了の重複防止
 
-            if (!outputFile.exists() || outputFile.length() == 0L || !outputFile.canRead()) {
-                Log.e("TtsGatewayImpl", "Invalid output file: cannot prepare MediaPlayer")
-                continuation.resume(Unit)
-                return@suspendCancellableCoroutine
-            }
+        try {
+            player.setDataSource(file.absolutePath)
 
-            val player = MediaPlayer()
-            try {
-                player.setDataSource(outputFile.absolutePath)
-                player.setOnCompletionListener {
+            player.setOnCompletionListener {
+                if (!resumed) {
+                    resumed = true
+                    Log.d("TtsGatewayImpl", "Playback completed: ${file.name}")
                     it.release()
                     continuation.resume(Unit)
                 }
-                player.setOnErrorListener { _, what, extra ->
+            }
+
+            player.setOnErrorListener { _, what, extra ->
+                if (!resumed) {
+                    resumed = true
                     Log.e("TtsGatewayImpl", "MediaPlayer error: what=$what, extra=$extra")
                     player.release()
                     continuation.resume(Unit)
-                    true
                 }
-                player.prepare()
-                player.start()
-            } catch (e: IOException) {
+                true
+            }
+
+            player.setOnInfoListener { _, what, extra ->
+                Log.w("TtsGatewayImpl", "MediaPlayer info: what=$what, extra=$extra")
+                false
+            }
+
+            player.prepare()
+            player.start()
+            Log.d("TtsGatewayImpl", "Playback started: ${file.name}")
+
+            continuation.invokeOnCancellation {
+                if (!resumed) {
+                    resumed = true
+                    Log.w("TtsGatewayImpl", "Playback cancelled: ${file.name}")
+                    player.stop()
+                    player.release()
+                }
+            }
+
+        } catch (e: IOException) {
+            if (!resumed) {
+                resumed = true
                 Log.e("TtsGatewayImpl", "MediaPlayer prepare failed", e)
                 player.release()
                 continuation.resumeWithException(e)
